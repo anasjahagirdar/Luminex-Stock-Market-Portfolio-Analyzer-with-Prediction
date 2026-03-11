@@ -1,7 +1,7 @@
 # 🚀 Luminex – AI Stock Market Portfolio Analyzer
 
 <p align="center">
-  <img src="screenshots/landing.png" alt="Luminex Landing" width="100%">
+  <img src="Screenshots/landing.png" alt="Luminex Landing" width="100%">
 </p>
 
 <p align="center">
@@ -30,7 +30,7 @@ Built with a **full-stack architecture** using **FastAPI + React + TypeScript + 
 
 ## 🏠 Landing Page
 
-![Landing](screenshots/landing.png)
+![Landing](Screenshots/landing.png)
 
 ---
 
@@ -38,7 +38,7 @@ Built with a **full-stack architecture** using **FastAPI + React + TypeScript + 
 
 Secure user authentication system with registration, login, and password recovery.
 
-![Login](screenshots/login.png)
+![Login](Screenshots/login.png)
 
 ---
 
@@ -52,7 +52,7 @@ The dashboard provides an overview of:
 - Risk level
 - Interactive stock charts
 
-![Dashboard](screenshots/dashboard.png)
+![Dashboard](Screenshots/dashboard.png)
 
 ---
 
@@ -60,7 +60,7 @@ The dashboard provides an overview of:
 
 Compare two stocks side-by-side using interactive charts and radar metrics.
 
-![Compare](screenshots/compare.png)
+![Compare](Screenshots/compare.png)
 
 Features:
 
@@ -74,7 +74,7 @@ Features:
 
 Luminex includes a **Linear Regression prediction engine** for stock price forecasting.
 
-![ML](screenshots/ml-analysis.png)
+![ML](Screenshots/ml-analysis.png)
 
 Displays:
 
@@ -89,7 +89,7 @@ Displays:
 
 Track global companies and cryptocurrencies.
 
-![International](screenshots/international.png)
+![International](Screenshots/international.png)
 
 Features:
 
@@ -103,7 +103,7 @@ Features:
 
 Track Indian companies listed on the **BSE**.
 
-![Indian Stocks](screenshots/indian.png)
+![Indian Stocks](Screenshots/indian.png)
 
 Features:
 
@@ -122,7 +122,7 @@ Advanced portfolio analytics including:
 - Volatility
 - Sharpe ratio
 
-![Portfolio](screenshots/portfolio-health.png)
+![Portfolio](Screenshots/portfolio-health.png)
 
 ---
 
@@ -130,7 +130,7 @@ Advanced portfolio analytics including:
 
 View and manage all your holdings in one place.
 
-![Holdings](screenshots/holdings.png)
+![Holdings](Screenshots/holdings.png)
 
 Features:
 
