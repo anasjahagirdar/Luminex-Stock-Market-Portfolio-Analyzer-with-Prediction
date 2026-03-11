@@ -2,33 +2,32 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Set
 
 
 def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        'SELECT name FROM sqlite_master WHERE type=\'table\' AND name=?',
         (table_name,),
     ).fetchone()
     return row is not None
 
 
 def get_columns(conn: sqlite3.Connection, table_name: str) -> Set[str]:
-    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    rows = conn.execute(f'PRAGMA table_info({table_name})').fetchall()
     return {r[1] for r in rows}
 
 
 def infer_market(symbol: Optional[str]) -> str:
-    s = (symbol or "").upper().strip()
-    if s.endswith(".BSE") or s.endswith(".NSE"):
-        return "india"
-    return "international"
+    s = (symbol or '').upper().strip()
+    if s.endswith('.BSE') or s.endswith('.NSE'):
+        return 'india'
+    return 'international'
 
 
 def ensure_default_portfolio(conn: sqlite3.Connection, user_id: int, now_iso: str) -> int:
-    # Try "My Portfolio" first.
     row = conn.execute(
         """
         SELECT id
@@ -42,7 +41,6 @@ def ensure_default_portfolio(conn: sqlite3.Connection, user_id: int, now_iso: st
     if row:
         return int(row[0])
 
-    # Fallback to any existing portfolio for this user.
     row = conn.execute(
         """
         SELECT id
@@ -56,7 +54,6 @@ def ensure_default_portfolio(conn: sqlite3.Connection, user_id: int, now_iso: st
     if row:
         return int(row[0])
 
-    # Create one if none exists.
     cur = conn.execute(
         """
         INSERT INTO portfolios (user_id, name, created_at, updated_at)
@@ -68,46 +65,45 @@ def ensure_default_portfolio(conn: sqlite3.Connection, user_id: int, now_iso: st
 
 
 def migrate_portfolio_items(conn: sqlite3.Connection) -> None:
-    if not table_exists(conn, "portfolio_items"):
-        print("No portfolio_items table found. Nothing to migrate.")
+    if not table_exists(conn, 'portfolio_items'):
+        print('No portfolio_items table found. Nothing to migrate.')
         return
 
-    if not table_exists(conn, "portfolios"):
-        raise RuntimeError("portfolios table is missing. Cannot map portfolio_id safely.")
+    if not table_exists(conn, 'portfolios'):
+        raise RuntimeError('portfolios table is missing. Cannot map portfolio_id safely.')
 
-    cols = get_columns(conn, "portfolio_items")
-    required = {"id", "symbol", "name", "quantity", "avg_buy_price"}
+    cols = get_columns(conn, 'portfolio_items')
+    required = {'id', 'symbol', 'name', 'quantity', 'avg_buy_price'}
     missing_required = required - cols
     if missing_required:
         raise RuntimeError(
-            f"portfolio_items missing required columns: {sorted(missing_required)}"
+            f'portfolio_items missing required columns: {sorted(missing_required)}'
         )
 
-    has_portfolio_id = "portfolio_id" in cols
-    has_market = "market" in cols
-    has_user_id = "user_id" in cols
+    has_portfolio_id = 'portfolio_id' in cols
+    has_market = 'market' in cols
+    has_user_id = 'user_id' in cols
 
     if has_portfolio_id and has_market:
-        print("portfolio_items already has portfolio_id and market. Migration not required.")
+        print('portfolio_items already has portfolio_id and market. Migration not required.')
         return
 
-    print("Starting migration for portfolio_items...")
-    print(f"Existing columns: {sorted(cols)}")
+    print('Starting migration for portfolio_items...')
+    print(f'Existing columns: {sorted(cols)}')
 
-    now_iso = datetime.utcnow().isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
 
-    # Build dynamic SELECT for old/partial schema.
     select_parts = [
-        "id",
-        "portfolio_id" if has_portfolio_id else "NULL AS portfolio_id",
-        "user_id" if has_user_id else "NULL AS user_id",
-        "symbol",
-        "name",
-        "quantity",
-        "avg_buy_price",
-        "sector" if "sector" in cols else "NULL AS sector",
-        "market" if has_market else "NULL AS market",
-        "created_at" if "created_at" in cols else "NULL AS created_at",
+        'id',
+        'portfolio_id' if has_portfolio_id else 'NULL AS portfolio_id',
+        'user_id' if has_user_id else 'NULL AS user_id',
+        'symbol',
+        'name',
+        'quantity',
+        'avg_buy_price',
+        'sector' if 'sector' in cols else 'NULL AS sector',
+        'market' if has_market else 'NULL AS market',
+        'created_at' if 'created_at' in cols else 'NULL AS created_at',
     ]
 
     rows = conn.execute(
@@ -118,17 +114,14 @@ def migrate_portfolio_items(conn: sqlite3.Connection) -> None:
         """
     ).fetchall()
 
-    # Pre-create portfolio mapping for known user_ids.
     user_to_portfolio: Dict[int, int] = {}
     if has_user_id:
         user_ids = sorted({int(r[2]) for r in rows if r[2] is not None})
         for uid in user_ids:
             user_to_portfolio[uid] = ensure_default_portfolio(conn, uid, now_iso)
 
-    # Clean up any old failed temp table.
-    conn.execute("DROP TABLE IF EXISTS portfolio_items_new")
+    conn.execute('DROP TABLE IF EXISTS portfolio_items_new')
 
-    # New schema: keeps user_id for backward compatibility with current backend code.
     conn.execute(
         """
         CREATE TABLE portfolio_items_new (
@@ -161,7 +154,6 @@ def migrate_portfolio_items(conn: sqlite3.Connection) -> None:
         market = r[8]
         created_at = r[9]
 
-        # Resolve portfolio_id if missing in old schema.
         if portfolio_id is None:
             if user_id is not None:
                 uid = int(user_id)
@@ -170,11 +162,11 @@ def migrate_portfolio_items(conn: sqlite3.Connection) -> None:
                 portfolio_id = user_to_portfolio[uid]
             else:
                 fallback = conn.execute(
-                    "SELECT id FROM portfolios ORDER BY id ASC LIMIT 1"
+                    'SELECT id FROM portfolios ORDER BY id ASC LIMIT 1'
                 ).fetchone()
                 if not fallback:
                     raise RuntimeError(
-                        f"Cannot resolve portfolio_id for portfolio_items.id={row_id}"
+                        f'Cannot resolve portfolio_id for portfolio_items.id={row_id}'
                     )
                 portfolio_id = int(fallback[0])
 
@@ -212,58 +204,56 @@ def migrate_portfolio_items(conn: sqlite3.Connection) -> None:
         )
         inserted += 1
 
-    # Replace table.
-    conn.execute("DROP TABLE portfolio_items")
-    conn.execute("ALTER TABLE portfolio_items_new RENAME TO portfolio_items")
+    conn.execute('DROP TABLE portfolio_items')
+    conn.execute('ALTER TABLE portfolio_items_new RENAME TO portfolio_items')
 
-    # Recreate helpful indexes expected by ORM access patterns.
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS ix_portfolio_items_portfolio_id ON portfolio_items (portfolio_id)"
+        'CREATE INDEX IF NOT EXISTS ix_portfolio_items_portfolio_id ON portfolio_items (portfolio_id)'
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS ix_portfolio_items_user_id ON portfolio_items (user_id)"
+        'CREATE INDEX IF NOT EXISTS ix_portfolio_items_user_id ON portfolio_items (user_id)'
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS ix_portfolio_items_symbol ON portfolio_items (symbol)"
+        'CREATE INDEX IF NOT EXISTS ix_portfolio_items_symbol ON portfolio_items (symbol)'
     )
 
-    new_cols = get_columns(conn, "portfolio_items")
-    print(f"Migration complete. Rows copied: {inserted}")
-    print(f"New columns: {sorted(new_cols)}")
+    new_cols = get_columns(conn, 'portfolio_items')
+    print(f'Migration complete. Rows copied: {inserted}')
+    print(f'New columns: {sorted(new_cols)}')
 
 
 def main() -> None:
-    default_db = Path(__file__).resolve().parents[1] / "luminex.db"
+    default_db = Path(__file__).resolve().parents[1] / 'luminex.db'
 
     parser = argparse.ArgumentParser(
-        description="Migrate portfolio_items to include portfolio_id + market (SQLite-safe table recreation)."
+        description='Migrate portfolio_items to include portfolio_id + market (SQLite-safe table recreation).'
     )
     parser.add_argument(
-        "--db",
+        '--db',
         type=str,
         default=str(default_db),
-        help="Path to SQLite DB file (default: backend/luminex.db).",
+        help='Path to SQLite DB file (default: backend/luminex.db).',
     )
     args = parser.parse_args()
 
     db_path = Path(args.db).resolve()
     if not db_path.exists():
-        raise FileNotFoundError(f"Database file not found: {db_path}")
+        raise FileNotFoundError(f'Database file not found: {db_path}')
 
     conn = sqlite3.connect(str(db_path))
     try:
-        conn.execute("PRAGMA foreign_keys=OFF")
-        conn.execute("BEGIN IMMEDIATE")
+        conn.execute('PRAGMA foreign_keys=OFF')
+        conn.execute('BEGIN IMMEDIATE')
         migrate_portfolio_items(conn)
         conn.commit()
-        print(f"Committed migration on: {db_path}")
+        print(f'Committed migration on: {db_path}')
     except Exception:
         conn.rollback()
         raise
     finally:
-        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute('PRAGMA foreign_keys=ON')
         conn.close()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

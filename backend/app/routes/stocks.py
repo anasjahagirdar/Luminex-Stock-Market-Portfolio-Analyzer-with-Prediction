@@ -1,12 +1,22 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from curl_cffi import requests as curl_requests
 from datetime import datetime, timedelta
 import json
-import requests
 import os
-import time
 import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+try:
+    import requests
+except Exception:
+    requests = None
+
+try:
+    from curl_cffi import requests as curl_requests
+except Exception:
+    curl_requests = None
 
 from sqlalchemy.orm import Session
 
@@ -90,6 +100,29 @@ def _normalize_symbol(symbol: str) -> str:
     return (symbol or "").strip().upper()
 
 
+def _http_get_json(
+    url: str,
+    params: Optional[dict] = None,
+    headers: Optional[dict] = None,
+    timeout: int = 20,
+) -> dict:
+    if requests is not None:
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=timeout,
+            verify=VERIFY_CERT,
+        )
+        return response.json()
+
+    query = urlencode(params or {})
+    full_url = f"{url}?{query}" if query else url
+    request = Request(full_url, headers=headers or {})
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode('utf-8'))
+
+
 def _throttled_alpha_get(params: dict) -> dict:
     global _alpha_last_call
     with _alpha_lock:
@@ -100,8 +133,7 @@ def _throttled_alpha_get(params: dict) -> dict:
         _alpha_last_call = time.time()
 
     payload = {**params, "apikey": ALPHA_VANTAGE_KEY}
-    r = requests.get("https://www.alphavantage.co/query", params=payload, timeout=20)
-    return r.json()
+    return _http_get_json("https://www.alphavantage.co/query", params=payload, timeout=20)
 
 
 def fetch_yahoo(symbol: str, params: dict) -> dict:
@@ -110,27 +142,40 @@ def fetch_yahoo(symbol: str, params: dict) -> dict:
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json",
     }
-    try:
-        res = curl_requests.get(
-            url,
+
+    def _plain_get(target_url: str) -> dict:
+        return _http_get_json(
+            target_url,
             params=params,
             headers=headers,
             timeout=15,
-            impersonate="chrome110",
-            verify=VERIFY_CERT,
         )
-        return res.json()
+
+    try:
+        if curl_requests is not None:
+            res = curl_requests.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=15,
+                impersonate="chrome110",
+                verify=VERIFY_CERT,
+            )
+            return res.json()
+        return _plain_get(url)
     except Exception:
         url2 = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}"
-        res = curl_requests.get(
-            url2,
-            params=params,
-            headers=headers,
-            timeout=15,
-            impersonate="chrome110",
-            verify=VERIFY_CERT,
-        )
-        return res.json()
+        if curl_requests is not None:
+            res = curl_requests.get(
+                url2,
+                params=params,
+                headers=headers,
+                timeout=15,
+                impersonate="chrome110",
+                verify=VERIFY_CERT,
+            )
+            return res.json()
+        return _plain_get(url2)
 
 
 # -----------------------------

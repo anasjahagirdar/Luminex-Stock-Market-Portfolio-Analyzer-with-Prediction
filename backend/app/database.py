@@ -1,11 +1,23 @@
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./luminex.db"
+BASE_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_SQLITE_PATH = BASE_DIR / 'luminex.db'
+
+load_dotenv(BASE_DIR / '.env')
+
+SQLALCHEMY_DATABASE_URL = os.getenv(
+    'DATABASE_URL',
+    f"sqlite:///{DEFAULT_SQLITE_PATH.as_posix()}",
+)
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},
+    connect_args={'check_same_thread': False},
     pool_pre_ping=True,
     future=True,
 )
