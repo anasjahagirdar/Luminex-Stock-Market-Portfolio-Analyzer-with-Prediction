@@ -8,7 +8,7 @@ from jose import JWTError, jwt
 
 logger = logging.getLogger(__name__)
 
-SECRET_KEY = os.getenv('LUMINEX_SECRET_KEY', 'luminex-secret-key-2024-change-in-production')
+SECRET_KEY = os.getenv('LUMINEX_SECRET_KEY') or os.getenv('JWT_SECRET') or 'luminex-secret-key-2024-change-in-production'
 ALGORITHM = os.getenv('LUMINEX_JWT_ALGORITHM', 'HS256')
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv('LUMINEX_ACCESS_TOKEN_EXPIRE_MINUTES', '1440'))
 

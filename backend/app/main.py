@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -13,6 +14,20 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv('LUMINEX_CORS_ORIGINS', '')
+    configured = [origin.strip() for origin in raw.split(',') if origin.strip()]
+    if configured:
+        return configured
+
+    return [
+        'http://localhost:5173',
+        'http://localhost:4173',
+        'http://127.0.0.1:5173',
+        'http://127.0.0.1:4173',
+    ]
 
 
 @asynccontextmanager
@@ -32,12 +47,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        'http://localhost:5173',
-        'http://localhost:4173',
-        'http://127.0.0.1:5173',
-        'http://127.0.0.1:4173',
-    ],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],

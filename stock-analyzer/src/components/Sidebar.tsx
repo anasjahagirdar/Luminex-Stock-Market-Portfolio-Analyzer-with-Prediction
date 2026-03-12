@@ -30,16 +30,11 @@ export default function Sidebar() {
     selectedSector,
     setSelectedStock,
     setSelectedSector,
-    initializeSidebarData,
     isSidebarLoading,
     sidebarError,
   } = usePortfolioStore()
 
   const [expandedSector, setExpandedSector] = useState<string>('technology')
-
-  useEffect(() => {
-    void initializeSidebarData()
-  }, [initializeSidebarData])
 
   useEffect(() => {
     if (selectedSector) setExpandedSector(selectedSector)

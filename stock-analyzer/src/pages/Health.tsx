@@ -1,6 +1,5 @@
-import { useState, useEffect } from 'react'
-import { getPortfolio, removePortfolioItem } from '../api'
-import { useAuthStore } from '../store/authStore'
+import { useState } from 'react'
+import { removePortfolioItem } from '../api'
 import {
   PieChart,
   Pie,
@@ -41,18 +40,9 @@ const CustomIntlTooltip = ({ active, payload }: any) => {
 }
 
 export default function Health() {
-  const { portfolio } = usePortfolioStore()
-  const { user } = useAuthStore()
+  const { portfolio, portfolioHoldings, refreshPortfolioData } = usePortfolioStore()
   const [message, setMessage] = useState('')
-  const [dbHoldings, setDbHoldings] = useState<any[]>([])
-
-  useEffect(() => {
-    if (user) {
-      getPortfolio()
-        .then((data) => setDbHoldings(data))
-        .catch(() => setDbHoldings([]))
-    }
-  }, [user])
+  const dbHoldings = portfolioHoldings
 
   // Split holdings into Indian and International
   const indianHoldings = dbHoldings.filter((h) => h.symbol.endsWith('.BSE') || h.symbol.endsWith('.NSE'))
@@ -92,7 +82,7 @@ export default function Health() {
     { name: 'No Intl Holdings', value: 100, color: 'rgba(33,150,243,0.2)' },
   ]
 
-  const healthScore = portfolio?.health.overall ?? 72
+  const healthScore = portfolio?.health.overall ?? 0
   const gaugeData = [
     { value: healthScore, fill: healthScore >= 70 ? '#4CAF50' : healthScore >= 50 ? '#FF9800' : '#F44336' },
     { value: 100 - healthScore, fill: 'rgba(255,255,255,0.05)' },
@@ -328,8 +318,7 @@ export default function Health() {
                   onClick={async () => {
                     try {
                       await removePortfolioItem(item.symbol)
-                      const updated = await getPortfolio()
-                      setDbHoldings(updated)
+                      await refreshPortfolioData()
                       setMessage(`${displaySymbol} removed`)
                     } catch {
                       setMessage('Could not remove.')
@@ -364,3 +353,4 @@ export default function Health() {
     </div>
   )
 }
+

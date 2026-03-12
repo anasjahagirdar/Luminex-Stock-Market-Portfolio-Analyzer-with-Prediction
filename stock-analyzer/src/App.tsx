@@ -155,13 +155,13 @@ function AppLayout() {
   if (isAuth) return <Auth />
 
   const { initializeSidebarData } = usePortfolioStore()
-const { user } = useAuthStore()
+  const { user } = useAuthStore()
 
-useEffect(() => {
-  if (user) {
-    initializeSidebarData()
-  }
-}, [user])
+  useEffect(() => {
+    if (user) {
+      void initializeSidebarData()
+    }
+  }, [user, initializeSidebarData])
 
   return (
     <div

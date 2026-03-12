@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { getIndianStocks, getStockQuote, getStockHistory, addPortfolioItem } from '../api'
 import * as d3 from 'd3'
+import { usePortfolioStore } from '../store/portfolioStore'
 
 interface Stock {
   symbol: string
@@ -153,7 +154,7 @@ function CandlestickChart({ data, color }: { data: CandleData[], color: string }
       .attr('width', candleW + 2)
       .attr('height', innerH)
       .attr('fill', 'transparent')
-      .on('mouseover', function (event: MouseEvent, d: CandleData) {
+      .on('mouseover', function (_event: MouseEvent, d: CandleData) {
         const pct = ((d.close - d.open) / d.open * 100).toFixed(2)
         const isUp = d.close >= d.open
         tooltip
@@ -200,6 +201,7 @@ function CandlestickChart({ data, color }: { data: CandleData[], color: string }
 }
 
 export default function IndianStocks() {
+  const { refreshPortfolioData } = usePortfolioStore()
   const [stocks, setStocks] = useState<Stock[]>([])
   const [selectedStock, setSelectedStock] = useState<Stock | null>(null)
   const [quote, setQuote] = useState<any>(null)
@@ -288,6 +290,7 @@ export default function IndianStocks() {
 
     try {
       await addPortfolioItem(selectedStock.symbol, selectedStock.name, qty, price, sector, market)
+      await refreshPortfolioData()
       setMessage(`✓ Added ${qty} × ${selectedStock.symbol} at ₹${price}`)
       setQuantity('')
     } catch {
@@ -473,3 +476,4 @@ export default function IndianStocks() {
     </div>
   )
 }
+

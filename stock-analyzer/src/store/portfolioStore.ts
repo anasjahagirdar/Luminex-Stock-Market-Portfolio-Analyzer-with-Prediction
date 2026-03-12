@@ -7,6 +7,7 @@ import {
   ShoppingBag,
 } from 'lucide-react'
 import {
+  getPortfolio,
   getIndianStocks,
   getInternationalStocks,
   getStockHistory,
@@ -16,6 +17,17 @@ import {
 import type { Stock } from '../types/stock'
 import type { Sector } from '../types/sector'
 import type { Portfolio } from '../types/portfolio'
+
+type PortfolioHoldingResponse = {
+  id: number
+  symbol: string
+  name: string
+  quantity: number
+  avg_buy_price: number
+  sector?: string | null
+  market?: string | null
+  created_at?: string
+}
 
 type StockListItem = {
   symbol: string
@@ -109,9 +121,17 @@ const safeNumber = (value: unknown, fallback = 0): number => {
 }
 
 const round2 = (value: number) => Math.round(value * 100) / 100
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
 const isIndianSymbol = (symbol: string) =>
   symbol.endsWith('.BSE') || symbol.endsWith('.NSE')
+
+const inferExchange = (symbol: string, market?: string | null) => {
+  if (symbol.endsWith('.BSE')) return 'BSE'
+  if (symbol.endsWith('.NSE')) return 'NSE'
+  if (symbol.endsWith('-USD')) return 'CRYPTO'
+  return market === 'india' ? 'BSE' : 'NASDAQ'
+}
 
 const normalizeCurrency = (value: unknown, symbol: string): 'INR' | 'USD' => {
   const raw = String(value ?? '').trim().toUpperCase()
@@ -172,7 +192,7 @@ const enrichWithHistory = (stock: Stock, historyRows: any[]): Stock => {
 
 const buildStock = ({
   meta,
-  sector,
+  sector: _sector,
   quote,
   existing,
 }: {
@@ -267,6 +287,225 @@ const buildQuoteMeta = (stock: Stock): StockListItem => ({
   sector: stock.sector,
 })
 
+let sidebarBootstrapPromise: Promise<void> | null = null
+
+const DEFAULT_PORTFOLIO: Portfolio = {
+  id: '1',
+  name: 'My Portfolio',
+  items: [],
+  totalValue: 0,
+  totalInvested: 0,
+  totalProfitLoss: 0,
+  totalProfitLossPercent: 0,
+  health: {
+    overall: 0,
+    diversification: 0,
+    riskLevel: 'Low',
+    volatility: 0,
+    sharpeRatio: 0,
+    weaknesses: [],
+    strengths: [],
+  },
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+}
+
+const buildKnownQuoteMap = (
+  holdings: PortfolioHoldingResponse[],
+  stocks: Stock[],
+  portfolio?: Portfolio | null
+): Record<string, any> => {
+  const stockMap = new Map(stocks.map((stock) => [stock.symbol, stock]))
+  const portfolioMap = new Map((portfolio?.items ?? []).map((item) => [item.stock.symbol, item.stock]))
+  const quotes: Record<string, any> = {}
+  for (const holding of holdings) {
+    const source = stockMap.get(holding.symbol) ?? portfolioMap.get(holding.symbol)
+    if (!source || source.currentPrice <= 0) continue
+    quotes[holding.symbol] = {
+      currentPrice: source.currentPrice,
+      previousClose: source.previousClose,
+      change: source.change,
+      changePercent: source.changePercent,
+      currency: source.currency,
+      exchange: source.exchange,
+      marketCap: source.marketCap,
+      peRatio: source.peRatio,
+      eps: source.eps,
+      dividendYield: source.dividendYield,
+      week52High: source.week52High,
+      week52Low: source.week52Low,
+      sector: holding.sector ?? source.sector,
+      market: holding.market ?? (isIndianSymbol(holding.symbol) ? 'india' : 'international'),
+    }
+  }
+  return quotes
+}
+const buildHealthScore = (
+  items: Portfolio['items'],
+  totalValue: number,
+  totalProfitLossPercent: number
+): Portfolio['health'] => {
+  if (!items.length || totalValue <= 0) {
+    return {
+      overall: 0,
+      diversification: 0,
+      riskLevel: 'Low',
+      volatility: 0,
+      sharpeRatio: 0,
+      weaknesses: ['No holdings added yet'],
+      strengths: [],
+    }
+  }
+
+  const sectorTotals = new Map<string, number>()
+  let maxWeight = 0
+  let weightedAbsChange = 0
+
+  for (const item of items) {
+    const sector = item.stock.sector || 'consumer'
+    sectorTotals.set(sector, (sectorTotals.get(sector) ?? 0) + item.currentValue)
+    maxWeight = Math.max(maxWeight, item.weight)
+    weightedAbsChange += Math.abs(item.stock.changePercent || 0) * (item.weight / 100)
+  }
+
+  const hhi = Array.from(sectorTotals.values()).reduce((sum, value) => {
+    const weight = value / totalValue
+    return sum + weight * weight
+  }, 0)
+
+  const diversification = Math.round(clamp((1 - hhi) * 125, 0, 100))
+  const volatility = round2(weightedAbsChange * 4)
+
+  let riskLevel: Portfolio['health']['riskLevel'] = 'Low'
+  if (volatility >= 30) {
+    riskLevel = 'Very High'
+  } else if (volatility >= 20) {
+    riskLevel = 'High'
+  } else if (volatility >= 10) {
+    riskLevel = 'Medium'
+  }
+
+  const sharpeRatio = round2(totalProfitLossPercent / Math.max(volatility || 1, 1))
+  const pnlScore = clamp(50 + totalProfitLossPercent * 5, 0, 100)
+  const stabilityScore = clamp(100 - volatility, 0, 100)
+  const overall = Math.round(
+    clamp(diversification * 0.45 + stabilityScore * 0.35 + pnlScore * 0.2, 0, 100)
+  )
+
+  const strengths: string[] = []
+  const weaknesses: string[] = []
+
+  if (diversification >= 70) {
+    strengths.push('Diversified across multiple sectors')
+  } else {
+    weaknesses.push('Portfolio is concentrated in a small number of sectors')
+  }
+
+  if (maxWeight <= 45) {
+    strengths.push('No single holding dominates allocation')
+  } else {
+    weaknesses.push('One holding dominates portfolio allocation')
+  }
+
+  if (totalProfitLossPercent >= 0) {
+    strengths.push('Portfolio is currently profitable')
+  } else {
+    weaknesses.push('Portfolio is currently in drawdown')
+  }
+
+  if (volatility < 10) {
+    strengths.push('Low day-to-day portfolio volatility')
+  } else if (volatility < 20) {
+    strengths.push('Moderate portfolio volatility')
+  } else {
+    weaknesses.push('Elevated portfolio volatility')
+  }
+
+  return {
+    overall,
+    diversification,
+    riskLevel,
+    volatility,
+    sharpeRatio,
+    weaknesses,
+    strengths,
+  }
+}
+
+const buildLivePortfolio = (
+  holdings: PortfolioHoldingResponse[],
+  stocks: Stock[],
+  quoteBySymbol: Record<string, any>
+): Portfolio => {
+  const createdAt = holdings[0]?.created_at ?? new Date().toISOString()
+
+  if (!holdings.length) {
+    return {
+      ...DEFAULT_PORTFOLIO,
+      createdAt,
+      updatedAt: new Date().toISOString(),
+    }
+  }
+
+  const items = holdings.map((holding) => {
+    const existingStock = stocks.find((stock) => stock.symbol === holding.symbol)
+    const fallbackMeta: StockListItem = {
+      symbol: holding.symbol,
+      name: holding.name,
+      exchange: existingStock?.exchange ?? inferExchange(holding.symbol, holding.market),
+      market: holding.market ?? (isIndianSymbol(holding.symbol) ? 'india' : 'international'),
+      sector: holding.sector ?? existingStock?.sector,
+    }
+
+    const stock = buildStock({
+      meta: fallbackMeta,
+      sector: getSectorBySymbol(holding.symbol, holding.name, holding.sector ?? existingStock?.sector),
+      quote: quoteBySymbol[holding.symbol],
+      existing: existingStock,
+    })
+
+    const totalInvested = round2(holding.quantity * holding.avg_buy_price)
+    const currentValue = round2(holding.quantity * stock.currentPrice)
+    const profitLoss = round2(currentValue - totalInvested)
+    const profitLossPercent = totalInvested > 0 ? round2((profitLoss / totalInvested) * 100) : 0
+
+    return {
+      stock,
+      quantity: holding.quantity,
+      avgBuyPrice: holding.avg_buy_price,
+      totalInvested,
+      currentValue,
+      profitLoss,
+      profitLossPercent,
+      weight: 0,
+    }
+  })
+
+  const totalValue = round2(items.reduce((sum, item) => sum + item.currentValue, 0))
+  const totalInvested = round2(items.reduce((sum, item) => sum + item.totalInvested, 0))
+  const totalProfitLoss = round2(totalValue - totalInvested)
+  const totalProfitLossPercent =
+    totalInvested > 0 ? round2((totalProfitLoss / totalInvested) * 100) : 0
+
+  const itemsWithWeight = items.map((item) => ({
+    ...item,
+    weight: totalValue > 0 ? round2((item.currentValue / totalValue) * 100) : 0,
+  }))
+
+  return {
+    id: '1',
+    name: 'My Portfolio',
+    items: itemsWithWeight,
+    totalValue,
+    totalInvested,
+    totalProfitLoss,
+    totalProfitLossPercent,
+    health: buildHealthScore(itemsWithWeight, totalValue, totalProfitLossPercent),
+    createdAt,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
 const fetchQuotesMap = async (symbols: string[]): Promise<Record<string, any>> => {
   const unique = Array.from(new Set(symbols.map((s) => s.trim()).filter(Boolean)))
   if (unique.length === 0) return {}
@@ -304,9 +543,11 @@ interface PortfolioStore {
   selectedStock: Stock | null
   selectedSector: string | null
   portfolio: Portfolio | null
+  portfolioHoldings: PortfolioHoldingResponse[]
   isSidebarLoading: boolean
   sidebarError: string | null
   initializeSidebarData: () => Promise<void>
+  refreshPortfolioData: (holdings?: PortfolioHoldingResponse[]) => Promise<void>
   refreshSidebarQuotes: () => Promise<void>
   selectStockAndLoadHistory: (stock: Stock) => Promise<void>
   setSelectedStock: (stock: Stock) => void
@@ -323,103 +564,126 @@ export const usePortfolioStore = create<PortfolioStore>((set, get) => ({
   isSidebarLoading: false,
   sidebarError: null,
 
-  portfolio: {
-    id: '1',
-    name: 'My Portfolio',
-    items: [],
-    totalValue: 0,
-    totalInvested: 0,
-    totalProfitLoss: 0,
-    totalProfitLossPercent: 0,
-    health: {
-      overall: 72,
-      diversification: 65,
-      riskLevel: 'Medium',
-      volatility: 18.4,
-      sharpeRatio: 1.24,
-      weaknesses: ['Over-concentrated in Technology', 'Low dividend yield'],
-      strengths: ['Strong growth stocks', 'Good market cap coverage'],
-    },
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
+  portfolio: { ...DEFAULT_PORTFOLIO },
+  portfolioHoldings: [],
 
   initializeSidebarData: async () => {
+    const state = get()
+
+    if (state.isSidebarLoading && sidebarBootstrapPromise) {
+      return sidebarBootstrapPromise
+    }
+
+    if (state.stocks.length > 0 && state.sectors.length > 0) {
+      return
+    }
+
     set({ isSidebarLoading: true, sidebarError: null })
 
-    try {
-      const [intlList, indianList] = await Promise.all([
-        getInternationalStocks(),
-        getIndianStocks(),
-      ])
+    sidebarBootstrapPromise = (async () => {
+      try {
+        const [intlList, indianList] = await Promise.all([
+          getInternationalStocks(),
+          getIndianStocks(),
+        ])
 
-      const metaMap = new Map<string, StockListItem>()
-      ;[...intlList, ...indianList].forEach((item: StockListItem) => {
-        if (!metaMap.has(item.symbol)) metaMap.set(item.symbol, item)
-      })
-
-      const mergedMeta = Array.from(metaMap.values())
-
-      let stocks = mergedMeta.map((meta) =>
-        buildStock({
-          meta,
-          sector: getSectorBySymbol(meta.symbol, meta.name, meta.sector),
+        const metaMap = new Map<string, StockListItem>()
+        ;[...intlList, ...indianList].forEach((item: StockListItem) => {
+          if (!metaMap.has(item.symbol)) metaMap.set(item.symbol, item)
         })
-      )
 
-      // Startup prefetch: international only (fast path).
-      // Indian quotes are intentionally skipped here to avoid Alpha Vantage throttling delay.
-      const prefetchSymbols = stocks
-        .filter((s) => !isIndianSymbol(s.symbol))
-        .slice(0, 12)
-        .map((s) => s.symbol)
+        const mergedMeta = Array.from(metaMap.values())
 
-      const quoteBySymbol = await fetchQuotesMap(prefetchSymbols)
+        let stocks = mergedMeta.map((meta) =>
+          buildStock({
+            meta,
+            sector: getSectorBySymbol(meta.symbol, meta.name, meta.sector),
+          })
+        )
 
-      stocks = stocks.map((stock) => {
-        const quote = quoteBySymbol[stock.symbol]
-        if (!quote) return stock
-        return buildStock({
-          meta: toStockListItem(stock),
-          sector: stock.sector,
-          quote,
-          existing: stock,
+        const prefetchSymbols = stocks
+          .filter((s) => !isIndianSymbol(s.symbol))
+          .slice(0, 12)
+          .map((s) => s.symbol)
+
+        const quoteBySymbol = await fetchQuotesMap(prefetchSymbols)
+
+        stocks = stocks.map((stock) => {
+          const quote = quoteBySymbol[stock.symbol]
+          if (!quote) return stock
+          return buildStock({
+            meta: toStockListItem(stock),
+            sector: stock.sector,
+            quote,
+            existing: stock,
+          })
         })
-      })
 
-      const sectors = buildSectors(stocks)
+        const sectors = buildSectors(stocks)
 
-      const preferredSymbols = ['AAPL', 'MSFT', 'RELIANCE.BSE', 'TCS.BSE']
-      const selectedStock =
-        stocks.find((s) => preferredSymbols.includes(s.symbol)) ??
-        stocks[0] ??
-        null
+        const preferredSymbols = ['AAPL', 'MSFT', 'RELIANCE.BSE', 'TCS.BSE']
+        const selectedStock =
+          stocks.find((s) => preferredSymbols.includes(s.symbol)) ??
+          stocks[0] ??
+          null
 
-      const selectedSector = selectedStock?.sector ?? 'technology'
+        const selectedSector = selectedStock?.sector ?? 'technology'
 
-      set({
-        stocks,
-        sectors,
-        selectedStock,
-        selectedSector,
-        isSidebarLoading: false,
-        sidebarError: null,
-      })
+        set({
+          stocks,
+          sectors,
+          selectedStock,
+          selectedSector,
+          isSidebarLoading: false,
+          sidebarError: null,
+        })
 
-      if (selectedStock) {
-        void get().selectStockAndLoadHistory(selectedStock)
+        void get().refreshPortfolioData()
+
+        if (selectedStock) {
+          void get().selectStockAndLoadHistory(selectedStock)
+        }
+      } catch {
+        set({
+          stocks: [],
+          sectors: [],
+          selectedStock: null,
+          selectedSector: 'technology',
+          isSidebarLoading: false,
+          sidebarError: 'Failed to load real market data.',
+        })
+      } finally {
+        sidebarBootstrapPromise = null
       }
+    })()
+
+    return sidebarBootstrapPromise
+  },
+
+
+  refreshPortfolioData: async (holdings) => {
+    try {
+      const state = get()
+      const portfolioHoldings = holdings ?? await getPortfolio() as PortfolioHoldingResponse[]
+      const knownQuoteBySymbol = buildKnownQuoteMap(portfolioHoldings, state.stocks, state.portfolio)
+      const missingSymbols = portfolioHoldings
+        .map((holding) => holding.symbol)
+        .filter((symbol) => !(knownQuoteBySymbol[symbol]?.currentPrice > 0))
+      const fetchedQuoteBySymbol = missingSymbols.length > 0 ? await fetchQuotesMap(missingSymbols) : {}
+      const portfolio = buildLivePortfolio(
+        portfolioHoldings,
+        state.stocks,
+        { ...knownQuoteBySymbol, ...fetchedQuoteBySymbol }
+      )
+      set({ portfolio, portfolioHoldings })
     } catch {
-      set({
-        stocks: [],
-        sectors: [],
-        selectedStock: null,
-        selectedSector: 'technology',
-        isSidebarLoading: false,
-        sidebarError: 'Failed to load real market data.',
-      })
+      set((state) => ({
+        portfolioHoldings: holdings ?? state.portfolioHoldings,
+        portfolio: state.portfolio?.items.length ? state.portfolio : { ...DEFAULT_PORTFOLIO },
+      }))
     }
   },
+
 
   refreshSidebarQuotes: async () => {
     const currentStocks = get().stocks
@@ -549,6 +813,7 @@ export const usePortfolioStore = create<PortfolioStore>((set, get) => ({
         totalInvested: totalInvestedAll,
         totalProfitLoss: totalProfitLossAll,
         totalProfitLossPercent: totalProfitLossPercentAll,
+        health: buildHealthScore(itemsWithWeight, newTotalValue, totalProfitLossPercentAll),
         updatedAt: new Date().toISOString(),
       },
     })
@@ -565,16 +830,25 @@ export const usePortfolioStore = create<PortfolioStore>((set, get) => ({
     const totalProfitLossPercent =
       totalInvested > 0 ? (totalProfitLoss / totalInvested) * 100 : 0
 
+    const itemsWithWeight = updatedItems.map((item) => ({
+      ...item,
+      weight: totalValue > 0 ? (item.currentValue / totalValue) * 100 : 0,
+    }))
+
     set({
       portfolio: {
         ...portfolio,
-        items: updatedItems,
+        items: itemsWithWeight,
         totalValue,
         totalInvested,
         totalProfitLoss,
         totalProfitLossPercent,
+        health: buildHealthScore(itemsWithWeight, totalValue, totalProfitLossPercent),
         updatedAt: new Date().toISOString(),
       },
     })
   },
 }))
+
+
+

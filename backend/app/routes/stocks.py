@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi import APIRouter, Depends, HTTPException, Query
 from datetime import datetime, timedelta
 import json
@@ -30,7 +31,7 @@ except Exception:
     from app.models.models import Stock, StockHistory, SectorMapping, APICache
 
 
-ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY", "NADZEPD7XDEV74YR")
+ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_API_KEY") or os.getenv("ALPHA_VANTAGE_KEY") or "NADZEPD7XDEV74YR"
 CERT = os.getenv("LUMINEX_CERT", "C:/Users/Anas/cacert.pem")
 VERIFY_CERT: Any = CERT if CERT and os.path.exists(CERT) else True
 
@@ -416,6 +417,42 @@ def _db_cache_set(
                 created_at=now,
             )
         )
+
+
+def _db_cache_get_many(
+    db: Session,
+    endpoint: str,
+    symbols: List[str],
+    allow_stale: bool = False,
+) -> Dict[str, dict]:
+    unique_symbols = [symbol for symbol in dict.fromkeys(symbols) if symbol]
+    if not unique_symbols:
+        return {}
+
+    rows = (
+        db.query(APICache)
+        .filter(
+            APICache.endpoint == endpoint,
+            APICache.symbol.in_(unique_symbols),
+        )
+        .order_by(APICache.symbol.asc(), APICache.created_at.desc(), APICache.id.desc())
+        .all()
+    )
+
+    now = datetime.utcnow()
+    payloads: Dict[str, dict] = {}
+
+    for row in rows:
+        if not row.symbol or row.symbol in payloads:
+            continue
+        if not allow_stale and row.expires_at and row.expires_at < now:
+            continue
+        try:
+            payloads[row.symbol] = json.loads(row.response_json)
+        except Exception:
+            continue
+
+    return payloads
 
 
 def _upsert_stock_and_sector(
@@ -827,44 +864,63 @@ def _build_yahoo_quote(symbol: str) -> dict:
     }
 
 
-def _get_quote_payload(symbol: str, db: Session) -> dict:
+def _get_cached_quote_payload(
+    symbol: str,
+    db: Session,
+    allow_stale: bool = False,
+) -> Optional[dict]:
     cache_key = f"q:{symbol}"
-    endpoint_key = "/stocks/quote"
-
-    cached_mem = _cache_get(_quote_cache, cache_key, CACHE_TTL_QUOTE)
+    cached_mem = _cache_get(_quote_cache, cache_key, CACHE_TTL_QUOTE, allow_stale=allow_stale)
     if cached_mem:
         return cached_mem
 
-    cached_db = _db_cache_get(db, endpoint_key, symbol, allow_stale=False)
+    cached_db = _db_cache_get(db, "/stocks/quote", symbol, allow_stale=allow_stale)
     if cached_db:
         _cache_set(_quote_cache, cache_key, cached_db)
         return cached_db
 
+    return None
+
+
+def _load_quote_payload(symbol: str) -> dict:
     if _is_indian(symbol):
         try:
-            payload = _build_indian_quote(symbol)
+            return _build_indian_quote(symbol)
         except Exception:
-            payload = _build_indian_quote_from_yahoo(symbol)
-    else:
-        payload = _build_yahoo_quote(symbol)
+            return _build_indian_quote_from_yahoo(symbol)
+    return _build_yahoo_quote(symbol)
 
-    _cache_set(_quote_cache, cache_key, payload)
+
+def _persist_quote_payloads(db: Session, payloads: Dict[str, dict]) -> None:
+    if not payloads:
+        return
 
     try:
-        _upsert_stock_and_sector(
-            db,
-            symbol=symbol,
-            name=payload.get("name", symbol),
-            exchange=payload.get("exchange"),
-            market=payload.get("market"),
-            sector=payload.get("sector"),
-            currency=payload.get("currency"),
-        )
-        _db_cache_set(db, endpoint_key, symbol, payload, CACHE_TTL_QUOTE)
+        for symbol, payload in payloads.items():
+            _upsert_stock_and_sector(
+                db,
+                symbol=symbol,
+                name=payload.get("name", symbol),
+                exchange=payload.get("exchange"),
+                market=payload.get("market"),
+                sector=payload.get("sector"),
+                currency=payload.get("currency"),
+            )
+            _db_cache_set(db, "/stocks/quote", symbol, payload, CACHE_TTL_QUOTE)
         db.commit()
     except Exception:
         db.rollback()
 
+
+def _get_quote_payload(symbol: str, db: Session) -> dict:
+    cache_key = f"q:{symbol}"
+    cached = _get_cached_quote_payload(symbol, db)
+    if cached:
+        return cached
+
+    payload = _load_quote_payload(symbol)
+    _cache_set(_quote_cache, cache_key, payload)
+    _persist_quote_payloads(db, {symbol: payload})
     return payload
 
 
@@ -1005,43 +1061,13 @@ def search_stocks(q: str, market: str = "all"):
 
 
 @router.get("/indian")
-def get_indian_stocks(db: Session = Depends(get_db)):
-    payload = {"stocks": [_with_sector(s) for s in INDIAN_STOCKS]}
-    try:
-        for s in payload["stocks"]:
-            _upsert_stock_and_sector(
-                db,
-                symbol=s["symbol"],
-                name=s["name"],
-                exchange=s.get("exchange"),
-                market=s.get("market"),
-                sector=s.get("sector"),
-                currency="INR",
-            )
-        db.commit()
-    except Exception:
-        db.rollback()
-    return payload
+def get_indian_stocks():
+    return {"stocks": [_with_sector(s) for s in INDIAN_STOCKS]}
 
 
 @router.get("/international")
-def get_international_stocks(db: Session = Depends(get_db)):
-    payload = {"stocks": [_with_sector(s) for s in INTERNATIONAL_STOCKS]}
-    try:
-        for s in payload["stocks"]:
-            _upsert_stock_and_sector(
-                db,
-                symbol=s["symbol"],
-                name=s["name"],
-                exchange=s.get("exchange"),
-                market=s.get("market"),
-                sector=s.get("sector"),
-                currency=_currency_for_symbol(s["symbol"]),
-            )
-        db.commit()
-    except Exception:
-        db.rollback()
-    return payload
+def get_international_stocks():
+    return {"stocks": [_with_sector(s) for s in INTERNATIONAL_STOCKS]}
 
 
 @router.get("/quote")
@@ -1083,14 +1109,71 @@ def get_quotes(
 
     quotes: Dict[str, dict] = {}
     errors: List[dict] = []
+    fetched: Dict[str, dict] = {}
+    endpoint_key = "/stocks/quote"
 
     for sym in symbol_list:
+        cached = _cache_get(_quote_cache, f"q:{sym}", CACHE_TTL_QUOTE)
+        if cached:
+            quotes[sym] = cached
+
+    missing_symbols = [sym for sym in symbol_list if sym not in quotes]
+    cached_db_quotes = _db_cache_get_many(db, endpoint_key, missing_symbols, allow_stale=False)
+    for sym, payload in cached_db_quotes.items():
+        _cache_set(_quote_cache, f"q:{sym}", payload)
+        quotes[sym] = payload
+
+    remaining_symbols = [sym for sym in symbol_list if sym not in quotes]
+    indian_symbols = [sym for sym in remaining_symbols if _is_indian(sym)]
+    international_symbols = [sym for sym in remaining_symbols if not _is_indian(sym)]
+
+    for sym in indian_symbols:
         try:
-            quotes[sym] = _get_quote_payload(sym, db)
+            payload = _load_quote_payload(sym)
+            _cache_set(_quote_cache, f"q:{sym}", payload)
+            quotes[sym] = payload
+            fetched[sym] = payload
         except HTTPException as e:
-            errors.append({"symbol": sym, "status": e.status_code, "detail": e.detail})
+            stale = _get_cached_quote_payload(sym, db, allow_stale=True)
+            if stale:
+                quotes[sym] = stale
+            else:
+                errors.append({"symbol": sym, "status": e.status_code, "detail": e.detail})
         except Exception as e:
-            errors.append({"symbol": sym, "status": 500, "detail": str(e)})
+            stale = _get_cached_quote_payload(sym, db, allow_stale=True)
+            if stale:
+                quotes[sym] = stale
+            else:
+                errors.append({"symbol": sym, "status": 500, "detail": str(e)})
+
+    if international_symbols:
+        max_workers = min(8, len(international_symbols))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(_load_quote_payload, sym): sym
+                for sym in international_symbols
+            }
+            for future in as_completed(future_map):
+                sym = future_map[future]
+                try:
+                    payload = future.result()
+                    _cache_set(_quote_cache, f"q:{sym}", payload)
+                    quotes[sym] = payload
+                    fetched[sym] = payload
+                except HTTPException as e:
+                    stale = _get_cached_quote_payload(sym, db, allow_stale=True)
+                    if stale:
+                        quotes[sym] = stale
+                    else:
+                        errors.append({"symbol": sym, "status": e.status_code, "detail": e.detail})
+                except Exception as e:
+                    stale = _get_cached_quote_payload(sym, db, allow_stale=True)
+                    if stale:
+                        quotes[sym] = stale
+                    else:
+                        errors.append({"symbol": sym, "status": 500, "detail": str(e)})
+
+    _persist_quote_payloads(db, fetched)
 
     return {"quotes": quotes, "errors": errors, "count": len(quotes)}
 

@@ -26,6 +26,7 @@ function formatMoney(value: number, code: CurrencyCode) {
 
 export default function Dashboard() {
   const { selectedStock, portfolio, isSidebarLoading, sidebarError } = usePortfolioStore()
+  const hasHoldings = (portfolio?.items.length ?? 0) > 0
 
   return (
     <div style={{ padding: '24px' }}>
@@ -65,24 +66,22 @@ export default function Dashboard() {
         {[
           {
             label: 'TOTAL VALUE',
-            value: portfolio?.totalValue ? formatCurrency(portfolio.totalValue) : '₹0.00 INR',
+            value: hasHoldings ? formatCurrency(portfolio?.totalValue ?? 0) : '₹0.00 INR',
             color: '#F5C518',
           },
           {
             label: 'PROFIT / LOSS',
-            value: portfolio?.totalProfitLoss
-              ? formatCurrency(portfolio.totalProfitLoss)
-              : '₹0.00 INR',
+            value: hasHoldings ? formatCurrency(portfolio?.totalProfitLoss ?? 0) : '₹0.00 INR',
             color: (portfolio?.totalProfitLoss ?? 0) >= 0 ? '#4CAF50' : '#F44336',
           },
           {
             label: 'HEALTH SCORE',
-            value: `${portfolio?.health.overall ?? 0}/100`,
+            value: `${hasHoldings ? portfolio?.health.overall ?? 0 : 0}/100`,
             color: '#2196F3',
           },
           {
             label: 'RISK LEVEL',
-            value: portfolio?.health.riskLevel ?? 'N/A',
+            value: hasHoldings ? portfolio?.health.riskLevel ?? 'N/A' : 'N/A',
             color: '#FF9800',
           },
         ].map((stat) => (

@@ -5,4 +5,9 @@ __pycache__/
 .env
 dist/
 build/
-luminex.db
+
+# ignore databases
+*.db
+
+# allow demo database
+!backend/luminex.db

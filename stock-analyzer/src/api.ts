@@ -1,6 +1,18 @@
 import axios from 'axios'
 
-const BASE_URL = 'http://127.0.0.1:8000'
+const BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || 'http://127.0.0.1:8000'
+const QUOTE_TTL_MS = 60_000
+const HISTORY_TTL_MS = 5 * 60_000
+const LIST_TTL_MS = 30 * 60_000
+const COMMODITY_TTL_MS = 10 * 60_000
+
+type CacheEntry<T> = {
+  expiresAt: number
+  value: T
+}
+
+const responseCache = new Map<string, CacheEntry<unknown>>()
+const inflightRequests = new Map<string, Promise<unknown>>()
 
 const api = axios.create({
   baseURL: BASE_URL,
@@ -16,6 +28,45 @@ api.interceptors.request.use((config) => {
   }
   return config
 })
+
+const getCachedValue = <T>(key: string): T | null => {
+  const cached = responseCache.get(key)
+  if (!cached) return null
+  if (cached.expiresAt <= Date.now()) {
+    responseCache.delete(key)
+    return null
+  }
+  return cached.value as T
+}
+
+const setCachedValue = <T>(key: string, value: T, ttlMs: number) => {
+  responseCache.set(key, { value, expiresAt: Date.now() + ttlMs })
+}
+
+const cachedRequest = async <T>(key: string, ttlMs: number, loader: () => Promise<T>) => {
+  const cached = getCachedValue<T>(key)
+  if (cached !== null) return cached
+
+  const inflight = inflightRequests.get(key) as Promise<T> | undefined
+  if (inflight) return inflight
+
+  const request = loader()
+    .then((value) => {
+      setCachedValue(key, value, ttlMs)
+      inflightRequests.delete(key)
+      return value
+    })
+    .catch((error) => {
+      inflightRequests.delete(key)
+      throw error
+    })
+
+  inflightRequests.set(key, request)
+  return request
+}
+
+const normalizeSymbols = (symbols: string[]) =>
+  Array.from(new Set(symbols.map((symbol) => symbol.trim().toUpperCase()).filter(Boolean)))
 
 export type MarketFilter = 'all' | 'india' | 'international'
 
@@ -150,50 +201,88 @@ export const searchStocks = async (query: string, market: MarketFilter = 'all') 
 }
 
 export const getStockQuote = async (symbol: string) => {
-  const res = await api.get('/stocks/quote', {
-    params: { symbol },
+  const normalized = symbol.trim().toUpperCase()
+  return cachedRequest(`quote:${normalized}`, QUOTE_TTL_MS, async () => {
+    const res = await api.get('/stocks/quote', {
+      params: { symbol: normalized },
+    })
+    return res.data as StockQuoteResponse
   })
-  return res.data as StockQuoteResponse
 }
 
-// Optional batch endpoint (if backend provides /stocks/quotes)
 export const getStockQuotes = async (symbols: string[]) => {
-  if (!symbols.length) return {} as Record<string, StockQuoteResponse>
-  const res = await api.get('/stocks/quotes', {
-    params: { symbols: symbols.join(',') },
+  const normalized = normalizeSymbols(symbols)
+  if (!normalized.length) return {} as Record<string, StockQuoteResponse>
+
+  const cachedQuotes: Record<string, StockQuoteResponse> = {}
+  const missingSymbols: string[] = []
+
+  normalized.forEach((symbol) => {
+    const cached = getCachedValue<StockQuoteResponse>(`quote:${symbol}`)
+    if (cached) {
+      cachedQuotes[symbol] = cached
+    } else {
+      missingSymbols.push(symbol)
+    }
   })
-  return (res.data?.quotes ?? {}) as Record<string, StockQuoteResponse>
+
+  if (!missingSymbols.length) {
+    return cachedQuotes
+  }
+
+  const batchKey = `quotes:${missingSymbols.slice().sort().join(',')}`
+  const fetchedQuotes = await cachedRequest(batchKey, QUOTE_TTL_MS, async () => {
+    const res = await api.get('/stocks/quotes', {
+      params: { symbols: missingSymbols.join(',') },
+    })
+    return (res.data?.quotes ?? {}) as Record<string, StockQuoteResponse>
+  })
+
+  Object.entries(fetchedQuotes).forEach(([symbol, quote]) => {
+    setCachedValue(`quote:${symbol}`, quote, QUOTE_TTL_MS)
+  })
+
+  return { ...cachedQuotes, ...fetchedQuotes }
 }
 
-// Optional sector map endpoint (if backend provides /stocks/sector-map)
 export const getSectorMap = async () => {
   const res = await api.get('/stocks/sector-map')
   return (res.data?.mapping ?? {}) as Record<string, string>
 }
 
 export const getStockHistory = async (symbol: string, period: string = '1y') => {
-  const res = await api.get('/stocks/history', {
-    params: { symbol, period },
+  const normalized = symbol.trim().toUpperCase()
+  const normalizedPeriod = (period || '1y').toLowerCase()
+  return cachedRequest(`history:${normalized}:${normalizedPeriod}`, HISTORY_TTL_MS, async () => {
+    const res = await api.get('/stocks/history', {
+      params: { symbol: normalized, period: normalizedPeriod },
+    })
+    return res.data as StockHistoryResponse
   })
-  return res.data as StockHistoryResponse
 }
 
 export const getCommodityData = async (type: 'gold' | 'silver') => {
-  const res = await api.get('/stocks/commodity', {
-    params: { type },
+  return cachedRequest(`commodity:${type}`, COMMODITY_TTL_MS, async () => {
+    const res = await api.get('/stocks/commodity', {
+      params: { type },
+    })
+    return res.data as CommodityResponse
   })
-  return res.data as CommodityResponse
 }
 
 // Stock lists
 export const getIndianStocks = async () => {
-  const res = await api.get('/stocks/indian')
-  return (res.data?.stocks ?? []) as StockListItem[]
+  return cachedRequest('stocks:india', LIST_TTL_MS, async () => {
+    const res = await api.get('/stocks/indian')
+    return (res.data?.stocks ?? []) as StockListItem[]
+  })
 }
 
 export const getInternationalStocks = async () => {
-  const res = await api.get('/stocks/international')
-  return (res.data?.stocks ?? []) as StockListItem[]
+  return cachedRequest('stocks:international', LIST_TTL_MS, async () => {
+    const res = await api.get('/stocks/international')
+    return (res.data?.stocks ?? []) as StockListItem[]
+  })
 }
 
 export interface MLFeatureRow {

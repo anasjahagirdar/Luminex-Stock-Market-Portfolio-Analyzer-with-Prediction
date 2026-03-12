@@ -40,7 +40,6 @@ export default function GridBackground() {
       // Draw vertical perspective lines
       for (let i = 0; i <= numV; i++) {
         const t = i / numV
-        const bottomX = -spread / 2 + t * spread + w / 2 - w / 2
         const x = w / 2 - spread / 2 + t * spread
 
         ctx.beginPath()
