@@ -299,6 +299,29 @@ http://localhost:5173
 
 ---
 
+
+## Run with PM2
+
+Install dependencies
+
+Backend
+
+pip install -r requirements.txt
+
+Frontend
+
+npm install
+
+Start server
+
+pm2 start ecosystem.config.js
+
+Monitor
+
+pm2 status
+pm2 logs
+pm2 monit
+
 # 🔐 Environment Variables
 
 Create a `.env` file in the backend:
