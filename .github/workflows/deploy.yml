@@ -1,4 +1,4 @@
-name: Deploy Luminex Backend
+name: Deploy Luminex
 
 on:
   push:
@@ -10,7 +10,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout Repository
         uses: actions/checkout@v4
 
@@ -26,5 +25,18 @@ jobs:
           ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
             cd Luminex-Stock-Market-Portfolio-Analyzer-with-Prediction
             git pull origin main
+
+            # Restart backend
+            cd backend
+            source venv/bin/activate
+            pip install -r ../requirements.txt
             pm2 restart luminex-backend
+
+            # Rebuild and redeploy frontend
+            cd ../stock-analyzer
+            npm install --legacy-peer-deps
+            npm run build
+            sudo cp -r dist/* /var/www/luminex/
+
+            pm2 save
           EOF
