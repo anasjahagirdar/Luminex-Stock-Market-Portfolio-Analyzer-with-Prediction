@@ -10,4 +10,5 @@ build/
 *.db
 
 # allow demo database
-!backend/luminex.db
+!backend/luminex.dbstock-analyzer/venv/
+*.pem

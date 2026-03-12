@@ -31,7 +31,7 @@ except Exception:
     from app.models.models import Stock, StockHistory, SectorMapping, APICache
 
 
-ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_API_KEY") or os.getenv("ALPHA_VANTAGE_KEY") or "NADZEPD7XDEV74YR"
+ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_API_KEY") or os.getenv("ALPHA_VANTAGE_KEY")
 CERT = os.getenv("LUMINEX_CERT", "C:/Users/Anas/cacert.pem")
 VERIFY_CERT: Any = CERT if CERT and os.path.exists(CERT) else True
 
